@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 #
 # A library that provides a Python interface to the Telegram Bot API
-# Copyright (C) 2015-2022
+# Copyright (C) 2015-2025
 # Leandro Toledo de Souza <devs@python-telegram-bot.org>
 #
 # This program is free software: you can redistribute it and/or modify
@@ -19,7 +19,11 @@
 # pylint: disable=redefined-builtin
 """This module contains the classes that represent Telegram InlineQueryResult."""
 
+from typing import Final, Optional
+
+from telegram import constants
 from telegram._telegramobject import TelegramObject
+from telegram._utils import enum
 from telegram._utils.types import JSONDict
 
 
@@ -38,21 +42,38 @@ class InlineQueryResult(TelegramObject):
 
     Args:
         type (:obj:`str`): Type of the result.
-        id (:obj:`str`): Unique identifier for this result, 1-64 Bytes.
+        id (:obj:`str`): Unique identifier for this result,
+            :tg-const:`telegram.InlineQueryResult.MIN_ID_LENGTH`-
+            :tg-const:`telegram.InlineQueryResult.MAX_ID_LENGTH` Bytes.
 
     Attributes:
         type (:obj:`str`): Type of the result.
-        id (:obj:`str`): Unique identifier for this result, 1-64 Bytes.
+        id (:obj:`str`): Unique identifier for this result,
+            :tg-const:`telegram.InlineQueryResult.MIN_ID_LENGTH`-
+            :tg-const:`telegram.InlineQueryResult.MAX_ID_LENGTH` Bytes.
 
     """
 
-    __slots__ = ("type", "id")
+    __slots__ = ("id", "type")
 
-    def __init__(self, type: str, id: str, *, api_kwargs: JSONDict = None):
+    def __init__(self, type: str, id: str, *, api_kwargs: Optional[JSONDict] = None):
         super().__init__(api_kwargs=api_kwargs)
 
         # Required
-        self.type = type
-        self.id = str(id)  # pylint: disable=invalid-name
+        self.type: str = enum.get_member(constants.InlineQueryResultType, type, type)
+        self.id: str = str(id)
 
         self._id_attrs = (self.id,)
+
+        self._freeze()
+
+    MIN_ID_LENGTH: Final[int] = constants.InlineQueryResultLimit.MIN_ID_LENGTH
+    """:const:`telegram.constants.InlineQueryResultLimit.MIN_ID_LENGTH`
+
+    .. versionadded:: 20.0
+    """
+    MAX_ID_LENGTH: Final[int] = constants.InlineQueryResultLimit.MAX_ID_LENGTH
+    """:const:`telegram.constants.InlineQueryResultLimit.MAX_ID_LENGTH`
+
+    .. versionadded:: 20.0
+    """

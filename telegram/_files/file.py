@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 #
 # A library that provides a Python interface to the Telegram Bot API
-# Copyright (C) 2015-2022
+# Copyright (C) 2015-2025
 # Leandro Toledo de Souza <devs@python-telegram-bot.org>
 #
 # This program is free software: you can redistribute it and/or modify
@@ -36,21 +36,21 @@ if TYPE_CHECKING:
 class File(TelegramObject):
     """
     This object represents a file ready to be downloaded. The file can be e.g. downloaded with
-    :attr:`download_to_memory`. It is guaranteed that the link will be valid for at least 1 hour.
+    :attr:`download_to_drive`. It is guaranteed that the link will be valid for at least 1 hour.
     When the link expires, a new one can be requested by calling :meth:`telegram.Bot.get_file`.
 
     Objects of this class are comparable in terms of equality. Two objects of this class are
     considered equal, if their :attr:`file_unique_id` is equal.
 
-    .. versionchanged:: 20.0:
-        ``download`` was split into :meth:`download_to_memory` and :meth:`download_to_object`.
+    .. versionchanged:: 20.0
+        ``download`` was split into :meth:`download_to_drive` and :meth:`download_to_memory`.
 
     Note:
         * Maximum file size to download is
           :tg-const:`telegram.constants.FileSizeLimit.FILESIZE_DOWNLOAD`.
         * If you obtain an instance of this class from :attr:`telegram.PassportFile.get_file`,
           then it will automatically be decrypted as it downloads when you call e.g.
-          :meth:`download_to_memory`.
+          :meth:`download_to_drive`.
 
     Args:
         file_id (:obj:`str`): Identifier for this file, which can be used to download
@@ -58,49 +58,52 @@ class File(TelegramObject):
         file_unique_id (:obj:`str`): Unique identifier for this file, which
             is supposed to be the same over time and for different bots.
             Can't be used to download or reuse the file.
-        file_size (:obj:`int`, optional): Optional. File size in bytes, if known.
-        file_path (:obj:`str`, optional): File path. Use e.g. :meth:`download_to_memory` to get the
+        file_size (:obj:`int`, optional): File size in bytes, if known.
+        file_path (:obj:`str`, optional): File path. Use e.g. :meth:`download_to_drive` to get the
             file.
 
     Attributes:
-        file_id (:obj:`str`): Identifier for this file.
+        file_id (:obj:`str`): Identifier for this file, which can be used to download
+            or reuse the file.
         file_unique_id (:obj:`str`): Unique identifier for this file, which
             is supposed to be the same over time and for different bots.
             Can't be used to download or reuse the file.
-        file_size (:obj:`str`): Optional. File size in bytes.
-        file_path (:obj:`str`): Optional. File path. Use e.g. :meth:`download_to_memory` to get
-            the file.
+        file_size (:obj:`int`): Optional. File size in bytes, if known.
+        file_path (:obj:`str`): Optional. File path. Use e.g. :meth:`download_to_drive` to get the
+            file.
     """
 
     __slots__ = (
+        "_credentials",
         "file_id",
+        "file_path",
         "file_size",
         "file_unique_id",
-        "file_path",
-        "_credentials",
     )
 
     def __init__(
         self,
         file_id: str,
         file_unique_id: str,
-        file_size: int = None,
-        file_path: str = None,
+        file_size: Optional[int] = None,
+        file_path: Optional[str] = None,
         *,
-        api_kwargs: JSONDict = None,
+        api_kwargs: Optional[JSONDict] = None,
     ):
         super().__init__(api_kwargs=api_kwargs)
 
         # Required
-        self.file_id = str(file_id)
-        self.file_unique_id = str(file_unique_id)
+        self.file_id: str = str(file_id)
+        self.file_unique_id: str = str(file_unique_id)
         # Optionals
-        self.file_size = file_size
-        self.file_path = file_path
+        self.file_size: Optional[int] = file_size
+        self.file_path: Optional[str] = file_path
 
-        self._credentials: Optional["FileCredentials"] = None
+        self._credentials: Optional[FileCredentials] = None
 
         self._id_attrs = (self.file_unique_id,)
+
+        self._freeze()
 
     def _get_encoded_url(self) -> str:
         """Convert any UTF-8 char in :obj:`File.file_path` into a url encoded ASCII string."""
@@ -114,30 +117,31 @@ class File(TelegramObject):
     def _prepare_decrypt(self, buf: bytes) -> bytes:
         return decrypt(b64decode(self._credentials.secret), b64decode(self._credentials.hash), buf)
 
-    async def download_to_memory(
+    async def download_to_drive(
         self,
-        custom_path: FilePathInput = None,
+        custom_path: Optional[FilePathInput] = None,
+        *,
         read_timeout: ODVInput[float] = DEFAULT_NONE,
         write_timeout: ODVInput[float] = DEFAULT_NONE,
         connect_timeout: ODVInput[float] = DEFAULT_NONE,
         pool_timeout: ODVInput[float] = DEFAULT_NONE,
     ) -> Path:
         """
-        Download this file. By default, the file is saved in the current working directory with its
-        original filename as reported by Telegram. If the file has no filename, the file ID will
-        be used as filename. If :paramref:`custom_path` is supplied as a :obj:`str` or
+        Download this file. By default, the file is saved in the current working directory with
+        :attr:`file_path` as file name. If :paramref:`custom_path` is supplied as a :obj:`str` or
         :obj:`pathlib.Path`, it will be saved to that path.
 
         Note:
             If :paramref:`custom_path` isn't provided and :attr:`file_path` is the path of a
-              local file (which is the case when a Bot API Server is running in local mode), this
-              method will just return the path.
+            local file (which is the case when a Bot API Server is running in local mode), this
+            method will just return the path.
 
             The only exception to this are encrypted files (e.g. a passport file). For these, a
-              file with the prefix `decrypted_` will be created in the same directory as the
-              original file in order to decrypt the file without changing the existing one
-              in-place.
+            file with the prefix `decrypted_` will be created in the same directory as the
+            original file in order to decrypt the file without changing the existing one
+            in-place.
 
+        .. seealso:: :wiki:`Working with Files and Media <Working-with-Files-and-Media>`
 
         .. versionchanged:: 20.0
 
@@ -145,12 +149,20 @@ class File(TelegramObject):
             * Returns :class:`pathlib.Path` object in cases where previously a :obj:`str` was
               returned.
             * This method was previously called ``download``. It was split into
-              :meth:`download_to_memory` and :meth:`download_to_object`.
+              :meth:`download_to_drive` and :meth:`download_to_memory`.
 
+        .. versionchanged:: 21.7
+            Raises :exc:`RuntimeError` if :attr:`file_path` is not set. Note that files without
+            a :attr:`file_path` could never be downloaded, as this attribute is mandatory for that
+            operation.
 
         Args:
             custom_path (:class:`pathlib.Path` | :obj:`str` , optional): The path where the file
-                will be saved to. If not specified, will be saved in the current working directory.
+                will be saved to. If not specified, will be saved in the current working directory
+                with :attr:`file_path` as file name or the :attr:`file_id` if :attr:`file_path`
+                is not set.
+
+        Keyword Args:
             read_timeout (:obj:`float` | :obj:`None`, optional): Value to pass to
                 :paramref:`telegram.request.BaseRequest.post.read_timeout`. Defaults to
                 :attr:`~telegram.request.BaseRequest.DEFAULT_NONE`.
@@ -167,7 +179,13 @@ class File(TelegramObject):
         Returns:
             :class:`pathlib.Path`: Returns the Path object the file was downloaded to.
 
+        Raises:
+            RuntimeError: If :attr:`file_path` is not set.
+
         """
+        if not self.file_path:
+            raise RuntimeError("No `file_path` available for this file. Can not download.")
+
         local_file = is_local_file(self.file_path)
         url = None if local_file else self._get_encoded_url()
 
@@ -190,10 +208,8 @@ class File(TelegramObject):
             filename = Path(custom_path)
         elif local_file:
             return Path(self.file_path)
-        elif self.file_path:
-            filename = Path(Path(self.file_path).name)
         else:
-            filename = Path.cwd() / self.file_id
+            filename = Path(Path(self.file_path).name)
 
         buf = await self.get_bot().request.retrieve(
             url,
@@ -207,9 +223,10 @@ class File(TelegramObject):
         filename.write_bytes(buf)
         return filename
 
-    async def download_to_object(
+    async def download_to_memory(
         self,
         out: BinaryIO,
+        *,
         read_timeout: ODVInput[float] = DEFAULT_NONE,
         write_timeout: ODVInput[float] = DEFAULT_NONE,
         connect_timeout: ODVInput[float] = DEFAULT_NONE,
@@ -220,12 +237,24 @@ class File(TelegramObject):
         :obj:`io.BufferedIOBase`, the file contents will be saved to that object using the
         :obj:`out.write<io.BufferedIOBase.write>` method.
 
+        .. seealso:: :wiki:`Working with Files and Media <Working-with-Files-and-Media>`
+
+        Hint:
+            If you want to immediately read the data from ``out`` after calling this method, you
+            should call ``out.seek(0)`` first. See also :meth:`io.IOBase.seek`.
+
         .. versionadded:: 20.0
 
+        .. versionchanged:: 21.7
+            Raises :exc:`RuntimeError` if :attr:`file_path` is not set. Note that files without
+            a :attr:`file_path` could never be downloaded, as this attribute is mandatory for that
+            operation.
 
         Args:
             out (:obj:`io.BufferedIOBase`): A file-like object. Must be opened for writing in
                 binary mode.
+
+        Keyword Args:
             read_timeout (:obj:`float` | :obj:`None`, optional): Value to pass to
                 :paramref:`telegram.request.BaseRequest.post.read_timeout`. Defaults to
                 :attr:`~telegram.request.BaseRequest.DEFAULT_NONE`.
@@ -238,7 +267,13 @@ class File(TelegramObject):
             pool_timeout (:obj:`float` | :obj:`None`, optional): Value to pass to
                 :paramref:`telegram.request.BaseRequest.post.pool_timeout`. Defaults to
                 :attr:`~telegram.request.BaseRequest.DEFAULT_NONE`.
+
+        Raises:
+            RuntimeError: If :attr:`file_path` is not set.
         """
+        if not self.file_path:
+            raise RuntimeError("No `file_path` available for this file. Can not download.")
+
         local_file = is_local_file(self.file_path)
         url = None if local_file else self._get_encoded_url()
         path = Path(self.file_path) if local_file else None
@@ -256,24 +291,71 @@ class File(TelegramObject):
             buf = self._prepare_decrypt(buf)
         out.write(buf)
 
-    async def download_as_bytearray(self, buf: bytearray = None) -> bytearray:
+    async def download_as_bytearray(
+        self,
+        buf: Optional[bytearray] = None,
+        *,
+        read_timeout: ODVInput[float] = DEFAULT_NONE,
+        write_timeout: ODVInput[float] = DEFAULT_NONE,
+        connect_timeout: ODVInput[float] = DEFAULT_NONE,
+        pool_timeout: ODVInput[float] = DEFAULT_NONE,
+    ) -> bytearray:
         """Download this file and return it as a bytearray.
+
+        .. versionchanged:: 21.7
+            Raises :exc:`RuntimeError` if :attr:`file_path` is not set. Note that files without
+            a :attr:`file_path` could never be downloaded, as this attribute is mandatory for that
+            operation.
 
         Args:
             buf (:obj:`bytearray`, optional): Extend the given bytearray with the downloaded data.
+
+        Keyword Args:
+            read_timeout (:obj:`float` | :obj:`None`, optional): Value to pass to
+                :paramref:`telegram.request.BaseRequest.post.read_timeout`. Defaults to
+                :attr:`~telegram.request.BaseRequest.DEFAULT_NONE`.
+
+                .. versionadded:: 20.0
+            write_timeout (:obj:`float` | :obj:`None`, optional): Value to pass to
+                :paramref:`telegram.request.BaseRequest.post.write_timeout`. Defaults to
+                :attr:`~telegram.request.BaseRequest.DEFAULT_NONE`.
+
+                .. versionadded:: 20.0
+            connect_timeout (:obj:`float` | :obj:`None`, optional): Value to pass to
+                :paramref:`telegram.request.BaseRequest.post.connect_timeout`. Defaults to
+                :attr:`~telegram.request.BaseRequest.DEFAULT_NONE`.
+
+                .. versionadded:: 20.0
+            pool_timeout (:obj:`float` | :obj:`None`, optional): Value to pass to
+                :paramref:`telegram.request.BaseRequest.post.pool_timeout`. Defaults to
+                :attr:`~telegram.request.BaseRequest.DEFAULT_NONE`.
+
+                .. versionadded:: 20.0
 
         Returns:
             :obj:`bytearray`: The same object as :paramref:`buf` if it was specified. Otherwise a
             newly allocated :obj:`bytearray`.
 
+        Raises:
+            RuntimeError: If :attr:`file_path` is not set.
+
         """
+        if not self.file_path:
+            raise RuntimeError("No `file_path` available for this file. Can not download.")
+
         if buf is None:
             buf = bytearray()
 
         if is_local_file(self.file_path):
             bytes_data = Path(self.file_path).read_bytes()
         else:
-            bytes_data = await self.get_bot().request.retrieve(self._get_encoded_url())
+            bytes_data = await self.get_bot().request.retrieve(
+                self._get_encoded_url(),
+                read_timeout=read_timeout,
+                write_timeout=write_timeout,
+                connect_timeout=connect_timeout,
+                pool_timeout=pool_timeout,
+            )
         if self._credentials:
             buf.extend(self._prepare_decrypt(bytes_data))
         else:
