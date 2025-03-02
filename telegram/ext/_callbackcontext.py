@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 #
 # A library that provides a Python interface to the Telegram Bot API
-# Copyright (C) 2015-2022
+# Copyright (C) 2015-2025
 # Leandro Toledo de Souza <devs@python-telegram-bot.org>
 #
 # This program is free software: you can redistribute it and/or modify
@@ -17,24 +17,30 @@
 # You should have received a copy of the GNU Lesser Public License
 # along with this program.  If not, see [http://www.gnu.org/licenses/].
 """This module contains the CallbackContext class."""
-from typing import TYPE_CHECKING, Coroutine, Dict, Generic, List, Match, NoReturn, Optional, Type
+
+from collections.abc import Awaitable, Generator
+from re import Match
+from typing import TYPE_CHECKING, Any, Generic, NoReturn, Optional, TypeVar, Union
 
 from telegram._callbackquery import CallbackQuery
 from telegram._update import Update
+from telegram._utils.warnings import warn
 from telegram.ext._extbot import ExtBot
 from telegram.ext._utils.types import BD, BT, CD, UD
 
 if TYPE_CHECKING:
-    from asyncio import Queue
-    from typing import Any
+    from asyncio import Future, Queue
 
-    from telegram.ext import Application, Job, JobQueue  # noqa: F401
+    from telegram.ext import Application, Job, JobQueue
     from telegram.ext._utils.types import CCT
 
 _STORING_DATA_WIKI = (
     "https://github.com/python-telegram-bot/python-telegram-bot"
     "/wiki/Storing-bot%2C-user-and-chat-related-data"
 )
+
+# something like poor mans "typing.Self" for py<3.11
+ST = TypeVar("ST", bound="CallbackContext[Any, Any, Any, Any]")
 
 
 class CallbackContext(Generic[BT, UD, CD, BD]):
@@ -71,8 +77,7 @@ class CallbackContext(Generic[BT, UD, CD, BD]):
         * :any:`Custom Webhook Bot <examples.customwebhookbot>`
 
     .. seealso:: :attr:`telegram.ext.ContextTypes.DEFAULT_TYPE`,
-        `Job Queue <https://github.com/python-telegram-bot/
-        python-telegram-bot/wiki/Extensions-%E2%80%93-JobQueue>`_
+        :wiki:`Job Queue <Extensions---JobQueue>`
 
     Args:
         application (:class:`telegram.ext.Application`): The application associated with this
@@ -86,14 +91,14 @@ class CallbackContext(Generic[BT, UD, CD, BD]):
 
             .. versionadded:: 20.0
     Attributes:
-        coroutine (:term:`coroutine function`): Optional. Only present in error handlers if the
-            error was caused by a coroutine run with :meth:`Application.create_task` or a handler
+        coroutine (:term:`awaitable`): Optional. Only present in error handlers if the
+            error was caused by an awaitable run with :meth:`Application.create_task` or a handler
             callback with :attr:`block=False <BaseHandler.block>`.
-        matches (List[:meth:`re.Match <re.Match.expand>`]): Optional. If the associated update
+        matches (list[:meth:`re.Match <re.Match.expand>`]): Optional. If the associated update
             originated from a :class:`filters.Regex`, this will contain a list of match objects for
             every pattern where ``re.search(pattern, string)`` returned a match. Note that filters
             short circuit, so combined regex filters will not always be evaluated.
-        args (List[:obj:`str`]): Optional. Arguments passed to a command if the associated update
+        args (list[:obj:`str`]): Optional. Arguments passed to a command if the associated update
             is handled by :class:`telegram.ext.CommandHandler`, :class:`telegram.ext.PrefixHandler`
             or :class:`telegram.ext.StringCommandHandler`. It contains a list of the words in the
             text after the command, using any whitespace string as a delimiter.
@@ -109,50 +114,51 @@ class CallbackContext(Generic[BT, UD, CD, BD]):
     """
 
     __slots__ = (
+        "__dict__",
         "_application",
         "_chat_id",
         "_user_id",
         "args",
-        "matches",
+        "coroutine",
         "error",
         "job",
-        "coroutine",
-        "__dict__",
+        "matches",
     )
 
     def __init__(
-        self: "CCT",
-        application: "Application[BT, CCT, UD, CD, BD, Any]",
-        chat_id: int = None,
-        user_id: int = None,
+        self: ST,
+        application: "Application[BT, ST, UD, CD, BD, Any]",
+        chat_id: Optional[int] = None,
+        user_id: Optional[int] = None,
     ):
-        self._application = application
-        self._chat_id = chat_id
-        self._user_id = user_id
-        self.args: Optional[List[str]] = None
-        self.matches: Optional[List[Match]] = None
+        self._application: Application[BT, ST, UD, CD, BD, Any] = application
+        self._chat_id: Optional[int] = chat_id
+        self._user_id: Optional[int] = user_id
+        self.args: Optional[list[str]] = None
+        self.matches: Optional[list[Match[str]]] = None
         self.error: Optional[Exception] = None
-        self.job: Optional["Job"] = None
-        self.coroutine: Optional[Coroutine] = None
+        self.job: Optional[Job[Any]] = None
+        self.coroutine: Optional[
+            Union[Generator[Optional[Future[object]], None, Any], Awaitable[Any]]
+        ] = None
 
     @property
-    def application(self) -> "Application[BT, CCT, UD, CD, BD, Any]":
+    def application(self) -> "Application[BT, ST, UD, CD, BD, Any]":
         """:class:`telegram.ext.Application`: The application associated with this context."""
-        return self._application
+        return self._application  # type: ignore[return-value]
 
     @property
     def bot_data(self) -> BD:
         """:obj:`ContextTypes.bot_data`: Optional. An object that can be used to keep any data in.
         For each update it will be the same :attr:`ContextTypes.bot_data`. Defaults to :obj:`dict`.
 
-        .. seealso:: `Storing Bot, User and Chat Related Data <https://github.com/\
-            python-telegram-bot/python-telegram-bot/wiki/Storing-bot%2C-user-and-\
-            chat-related-data>`_,
+        .. seealso:: :wiki:`Storing Bot, User and Chat Related Data\
+            <Storing-bot%2C-user-and-chat-related-data>`
         """
         return self.application.bot_data
 
     @bot_data.setter
-    def bot_data(self, value: object) -> NoReturn:
+    def bot_data(self, _: object) -> NoReturn:
         raise AttributeError(
             f"You can not assign a new value to bot_data, see {_STORING_DATA_WIKI}"
         )
@@ -165,13 +171,11 @@ class CallbackContext(Generic[BT, UD, CD, BD]):
 
         Warning:
             When a group chat migrates to a supergroup, its chat id will change and the
-            ``chat_data`` needs to be transferred. For details see our `wiki page
-            <https://github.com/python-telegram-bot/python-telegram-bot/wiki/
-            Storing-bot,-user-and-chat-related-data#chat-migration>`_.
+            ``chat_data`` needs to be transferred. For details see our
+            :wiki:`wiki page <Storing-bot,-user-and-chat-related-data#chat-migration>`.
 
-        .. seealso:: `Storing Bot, User and Chat Related Data <https://github.com/\
-            python-telegram-bot/python-telegram-bot/wiki/Storing-bot%2C-user-and-\
-            chat-related-data>`_,
+        .. seealso:: :wiki:`Storing Bot, User and Chat Related Data\
+            <Storing-bot%2C-user-and-chat-related-data>`
 
         .. versionchanged:: 20.0
             The chat data is now also present in error handlers if the error is caused by a job.
@@ -181,7 +185,7 @@ class CallbackContext(Generic[BT, UD, CD, BD]):
         return None
 
     @chat_data.setter
-    def chat_data(self, value: object) -> NoReturn:
+    def chat_data(self, _: object) -> NoReturn:
         raise AttributeError(
             f"You can not assign a new value to chat_data, see {_STORING_DATA_WIKI}"
         )
@@ -192,9 +196,8 @@ class CallbackContext(Generic[BT, UD, CD, BD]):
         For each update from the same user it will be the same :obj:`ContextTypes.user_data`.
         Defaults to :obj:`dict`.
 
-        .. seealso:: `Storing Bot, User and Chat Related Data <https://github.com/\
-            python-telegram-bot/python-telegram-bot/wiki/Storing-bot%2C-user-and\
-            -chat-related-data>`_,
+        .. seealso:: :wiki:`Storing Bot, User and Chat Related Data\
+            <Storing-bot%2C-user-and-chat-related-data>`
 
         .. versionchanged:: 20.0
             The user data is now also present in error handlers if the error is caused by a job.
@@ -204,7 +207,7 @@ class CallbackContext(Generic[BT, UD, CD, BD]):
         return None
 
     @user_data.setter
-    def user_data(self, value: object) -> NoReturn:
+    def user_data(self, _: object) -> NoReturn:
         raise AttributeError(
             f"You can not assign a new value to user_data, see {_STORING_DATA_WIKI}"
         )
@@ -226,11 +229,13 @@ class CallbackContext(Generic[BT, UD, CD, BD]):
                 await self.application.persistence.refresh_bot_data(self.bot_data)
             if self.application.persistence.store_data.chat_data and self._chat_id is not None:
                 await self.application.persistence.refresh_chat_data(
-                    chat_id=self._chat_id, chat_data=self.chat_data
+                    chat_id=self._chat_id,
+                    chat_data=self.chat_data,  # type: ignore[arg-type]
                 )
             if self.application.persistence.store_data.user_data and self._user_id is not None:
                 await self.application.persistence.refresh_user_data(
-                    user_id=self._user_id, user_data=self.user_data
+                    user_id=self._user_id,
+                    user_data=self.user_data,  # type: ignore[arg-type]
                 )
 
     def drop_callback_data(self, callback_query: CallbackQuery) -> None:
@@ -243,8 +248,7 @@ class CallbackContext(Generic[BT, UD, CD, BD]):
             Will *not* raise exceptions in case the data is not found in the cache.
             *Will* raise :exc:`KeyError` in case the callback query can not be found in the cache.
 
-        .. seealso:: `Arbitrary callback_data <https://github.com/\
-            python-telegram-bot/python-telegram-bot/wiki/Arbitrary-callback_data>`_
+        .. seealso:: :wiki:`Arbitrary callback_data <Arbitrary-callback_data>`
 
         Args:
             callback_query (:class:`telegram.CallbackQuery`): The callback query.
@@ -261,16 +265,20 @@ class CallbackContext(Generic[BT, UD, CD, BD]):
                 )
             self.bot.callback_data_cache.drop_data(callback_query)
         else:
-            raise RuntimeError("telegram.Bot does not allow for arbitrary callback data.")
+            raise RuntimeError(  # noqa: TRY004
+                "telegram.Bot does not allow for arbitrary callback data."
+            )
 
     @classmethod
     def from_error(
-        cls: Type["CCT"],
+        cls: type["CCT"],
         update: object,
         error: Exception,
         application: "Application[BT, CCT, UD, CD, BD, Any]",
-        job: "Job" = None,
-        coroutine: Coroutine = None,
+        job: Optional["Job[Any]"] = None,
+        coroutine: Optional[
+            Union[Generator[Optional["Future[object]"], None, Any], Awaitable[Any]]
+        ] = None,
     ) -> "CCT":
         """
         Constructs an instance of :class:`telegram.ext.CallbackContext` to be passed to the error
@@ -290,13 +298,15 @@ class CallbackContext(Generic[BT, UD, CD, BD]):
             job (:class:`telegram.ext.Job`, optional): The job associated with the error.
 
                 .. versionadded:: 20.0
-            coroutine (:term:`coroutine function`, optional): The coroutine function associated
+            coroutine (:term:`awaitable`, optional): The awaitable associated
                 with this error if the error was caused by a coroutine run with
                 :meth:`Application.create_task` or a handler callback with
                 :attr:`block=False <BaseHandler.block>`.
 
                 .. versionadded:: 20.0
 
+                .. versionchanged:: 20.2
+                    Accepts :class:`asyncio.Future` and generator-based coroutine functions.
         Returns:
             :class:`telegram.ext.CallbackContext`
         """
@@ -314,7 +324,7 @@ class CallbackContext(Generic[BT, UD, CD, BD]):
 
     @classmethod
     def from_update(
-        cls: Type["CCT"],
+        cls: type["CCT"],
         update: object,
         application: "Application[Any, CCT, Any, Any, Any, Any]",
     ) -> "CCT":
@@ -344,8 +354,8 @@ class CallbackContext(Generic[BT, UD, CD, BD]):
 
     @classmethod
     def from_job(
-        cls: Type["CCT"],
-        job: "Job",
+        cls: type["CCT"],
+        job: "Job[CCT]",
         application: "Application[Any, CCT, Any, Any, Any, Any]",
     ) -> "CCT":
         """
@@ -366,11 +376,11 @@ class CallbackContext(Generic[BT, UD, CD, BD]):
         self.job = job
         return self
 
-    def update(self, data: Dict[str, object]) -> None:
+    def update(self, data: dict[str, object]) -> None:
         """Updates ``self.__slots__`` with the passed data.
 
         Args:
-            data (Dict[:obj:`str`, :obj:`object`]): The data.
+            data (dict[:obj:`str`, :obj:`object`]): The data.
         """
         for key, value in data.items():
             setattr(self, key, value)
@@ -381,15 +391,20 @@ class CallbackContext(Generic[BT, UD, CD, BD]):
         return self._application.bot
 
     @property
-    def job_queue(self) -> Optional["JobQueue"]:
+    def job_queue(self) -> Optional["JobQueue[ST]"]:
         """
         :class:`telegram.ext.JobQueue`: The :class:`JobQueue` used by the
-            :class:`telegram.ext.Application`.
+        :class:`telegram.ext.Application`.
 
-        .. seealso:: `Job Queue <https://github.com/python-telegram-bot/
-            python-telegram-bot/wiki/Extensions-%E2%80%93-JobQueue>`_
+        .. seealso:: :wiki:`Job Queue <Extensions---JobQueue>`
         """
-        return self._application.job_queue
+        if self._application._job_queue is None:  # pylint: disable=protected-access
+            warn(
+                "No `JobQueue` set up. To use `JobQueue`, you must install PTB via "
+                '`pip install "python-telegram-bot[job-queue]"`.',
+                stacklevel=2,
+            )
+        return self._application._job_queue  # pylint: disable=protected-access
 
     @property
     def update_queue(self) -> "Queue[object]":

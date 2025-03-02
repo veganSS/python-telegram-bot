@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 #
 # A library that provides a Python interface to the Telegram Bot API
-# Copyright (C) 2015-2022
+# Copyright (C) 2015-2025
 # Leandro Toledo de Souza <devs@python-telegram-bot.org>
 #
 # This program is free software: you can redistribute it and/or modify
@@ -16,15 +16,22 @@
 #
 # You should have received a copy of the GNU Lesser Public License
 # along with this program.  If not, see [http://www.gnu.org/licenses/].
-import datetime
+import datetime as dtm
 import inspect
 import pickle
+import re
 from copy import deepcopy
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
 from telegram import Bot, BotCommand, Chat, Message, PhotoSize, TelegramObject, User
+from telegram._utils.defaultvalue import DEFAULT_FALSE, DEFAULT_NONE, DefaultValue
+from telegram.ext import PicklePersistence
+from telegram.warnings import PTBUserWarning
+from tests.auxil.files import data_file
+from tests.auxil.slots import mro_slots
 
 
 def all_subclasses(cls):
@@ -55,17 +62,20 @@ class TestTelegramObject:
         pass
 
     def test_to_json(self, monkeypatch):
-        # to_json simply takes whatever comes from to_dict, therefore we only need to test it once
-        telegram_object = TelegramObject()
+        class Subclass(TelegramObject):
+            def __init__(self):
+                super().__init__()
+                self.arg = "arg"
+                self.arg2 = ["arg2", "arg2"]
+                self.arg3 = {"arg3": "arg3"}
+                self.empty_tuple = ()
 
-        # Test that it works with a dict with str keys as well as dicts as lists as values
-        d = {"str": "str", "str2": ["str", "str"], "str3": {"str": "str"}}
-        monkeypatch.setattr("telegram.TelegramObject.to_dict", lambda _: d)
-        json = telegram_object.to_json()
+        json = Subclass().to_json()
         # Order isn't guarantied
-        assert '"str": "str"' in json
-        assert '"str2": ["str", "str"]' in json
-        assert '"str3": {"str": "str"}' in json
+        assert '"arg": "arg"' in json
+        assert '"arg2": ["arg2", "arg2"]' in json
+        assert '"arg3": {"arg3": "arg3"}' in json
+        assert "empty_tuple" not in json
 
         # Now make sure that it doesn't work with not json stuff and that it fails loudly
         # Tuples aren't allowed as keys in json
@@ -73,12 +83,39 @@ class TestTelegramObject:
 
         monkeypatch.setattr("telegram.TelegramObject.to_dict", lambda _: d)
         with pytest.raises(TypeError):
-            telegram_object.to_json()
+            TelegramObject().to_json()
 
     def test_de_json_api_kwargs(self, bot):
         to = TelegramObject.de_json(data={"foo": "bar"}, bot=bot)
         assert to.api_kwargs == {"foo": "bar"}
         assert to.get_bot() is bot
+
+    def test_de_json_optional_bot(self):
+        to = TelegramObject.de_json(data={})
+        with pytest.raises(RuntimeError, match="no bot associated with it"):
+            to.get_bot()
+
+    def test_de_list(self, bot):
+        class SubClass(TelegramObject):
+            def __init__(self, arg: int, **kwargs):
+                super().__init__(**kwargs)
+                self.arg = arg
+
+                self._id_attrs = (self.arg,)
+
+        assert SubClass.de_list([{"arg": 1}, {"arg": 2}], bot) == (
+            SubClass(1),
+            SubClass(2),
+        )
+
+    def test_api_kwargs_read_only(self):
+        tg_object = TelegramObject(api_kwargs={"foo": "bar"})
+        tg_object._freeze()
+        assert isinstance(tg_object.api_kwargs, MappingProxyType)
+        with pytest.raises(TypeError):
+            tg_object.api_kwargs["foo"] = "baz"
+        with pytest.raises(AttributeError, match="can't be set"):
+            tg_object.api_kwargs = {"foo": "baz"}
 
     @pytest.mark.parametrize("cls", TO_SUBCLASSES, ids=[cls.__name__ for cls in TO_SUBCLASSES])
     def test_subclasses_have_api_kwargs(self, cls):
@@ -124,7 +161,7 @@ class TestTelegramObject:
 
     def test_to_dict_private_attribute(self):
         class TelegramObjectSubclass(TelegramObject):
-            __slots__ = ("a", "_b")  # Added slots so that the attrs are converted to dict
+            __slots__ = ("_b", "a")  # Added slots so that the attrs are converted to dict
 
             def __init__(self):
                 super().__init__()
@@ -137,6 +174,17 @@ class TestTelegramObject:
     def test_to_dict_api_kwargs(self):
         to = TelegramObject(api_kwargs={"foo": "bar"})
         assert to.to_dict() == {"foo": "bar"}
+
+    def test_to_dict_missing_attribute(self):
+        message = Message(1, dtm.datetime.now(), Chat(1, "private"), from_user=User(1, "", False))
+        message._unfreeze()
+        del message.chat
+
+        message_dict = message.to_dict()
+        assert "chat" not in message_dict
+
+        message_dict = message.to_dict(recursive=False)
+        assert message_dict["chat"] is None
 
     def test_to_dict_recursion(self):
         class Recursive(TelegramObject):
@@ -162,7 +210,19 @@ class TestTelegramObject:
         assert isinstance(to_dict_recurse["subclass"], dict)
         assert to_dict_recurse["subclass"]["recursive"] == "recursive"
 
-    def test_slot_behaviour(self, mro_slots):
+    def test_to_dict_default_value(self):
+        class SubClass(TelegramObject):
+            def __init__(self):
+                super().__init__()
+                self.default_none = DEFAULT_NONE
+                self.default_false = DEFAULT_FALSE
+
+        to = SubClass()
+        to_dict = to.to_dict()
+        assert "default_none" not in to_dict
+        assert to_dict["default_false"] is False
+
+    def test_slot_behaviour(self):
         inst = TelegramObject()
         for attr in inst.__slots__:
             assert getattr(inst, attr, "err") != "err", f"got extra slot '{attr}'"
@@ -179,6 +239,7 @@ class TestTelegramObject:
         assert a == b
         assert len(recwarn) == 1
         assert str(recwarn[0].message) == expected_warning
+        assert recwarn[0].category is PTBUserWarning
         assert recwarn[0].filename == __file__, "wrong stacklevel"
 
     def test_meaningful_comparison(self, recwarn):
@@ -225,10 +286,19 @@ class TestTelegramObject:
     def test_pickle(self, bot):
         chat = Chat(2, Chat.PRIVATE)
         user = User(3, "first_name", False)
-        date = datetime.datetime.now()
+        date = dtm.datetime.now()
         photo = PhotoSize("file_id", "unique", 21, 21)
         photo.set_bot(bot)
-        msg = Message(1, date, chat, from_user=user, text="foobar", photo=[photo])
+        msg = Message(
+            1,
+            date,
+            chat,
+            from_user=user,
+            text="foobar",
+            photo=[photo],
+            animation=DEFAULT_NONE,
+            api_kwargs={"api": "kwargs"},
+        )
         msg.set_bot(bot)
 
         # Test pickling of TGObjects, we choose Message since it's contains the most subclasses.
@@ -242,8 +312,12 @@ class TestTelegramObject:
         assert unpickled.from_user == user
         assert unpickled.date == date, f"{unpickled.date} != {date}"
         assert unpickled.photo[0] == photo
+        assert isinstance(unpickled.animation, DefaultValue)
+        assert unpickled.animation.value is None
+        assert isinstance(unpickled.api_kwargs, MappingProxyType)
+        assert unpickled.api_kwargs == {"api": "kwargs"}
 
-    def test_pickle_apply_api_kwargs(self, bot):
+    def test_pickle_apply_api_kwargs(self):
         """Makes sure that when a class gets new attributes, the api_kwargs are moved to the
         new attributes on unpickling."""
         obj = self.ChangingTO(api_kwargs={"foo": "bar"})
@@ -255,13 +329,113 @@ class TestTelegramObject:
         assert obj.foo == "bar"
         assert obj.api_kwargs == {}
 
+    async def test_pickle_backwards_compatibility(self):
+        """Test when newer versions of the library remove or add attributes from classes (which
+        the old pickled versions still/don't have).
+        """
+        # We use a modified version of the 20.0a5 Chat class, which
+        # * has an `all_members_are_admins` attribute,
+        # * a non-empty `api_kwargs` dict
+        # * does not have the `is_forum` attribute
+        # This specific version was pickled
+        # using PicklePersistence.update_chat_data and that's what we use here to test if
+        # * the (now) removed attribute `all_members_are_admins` was added to api_kwargs
+        # * the (now) added attribute `is_forum` does not affect the unpickling
+        pp = PicklePersistence(data_file("20a5_modified_chat.pickle"))
+        chat = (await pp.get_chat_data())[1]
+        assert chat.id == 1
+        assert chat.type == Chat.PRIVATE
+        api_kwargs_expected = {
+            "all_members_are_administrators": True,
+            "something": "Manually inserted",
+        }
+        # There are older attrs in Chat's api_kwargs which are present but we don't care about them
+        for k, v in api_kwargs_expected.items():
+            assert chat.api_kwargs[k] == v
+
+        with pytest.raises(AttributeError):
+            # removed attribute should not be available as attribute, only though api_kwargs
+            chat.all_members_are_administrators
+        with pytest.raises(AttributeError):
+            # New attribute should not be available either as is always the case for pickle
+            chat.is_forum
+
+        # Ensure that loading objects that were pickled before attributes were made immutable
+        # are still mutable
+        chat.id = 7
+        assert chat.id == 7
+
+    def test_pickle_handle_properties(self):
+        # Very hard to properly test, can't use a pickle file since newer versions of the library
+        # will stop having the property.
+        # The code below uses exec statements to simulate library changes. There is no other way
+        # to test this.
+        # Original class:
+        v1 = """
+class PicklePropertyTest(TelegramObject):
+    __slots__ = ("forward_from", "to_be_removed", "forward_date")
+    def __init__(self, forward_from=None, forward_date=None, api_kwargs=None):
+        super().__init__(api_kwargs=api_kwargs)
+        self.forward_from = forward_from
+        self.forward_date = forward_date
+        self.to_be_removed = "to_be_removed"
+"""
+        exec(v1, globals(), None)
+        old = PicklePropertyTest("old_val", "date", api_kwargs={"new_attr": 1})  # noqa: F821
+        pickled_v1 = pickle.dumps(old)
+
+        # After some API changes:
+        v2 = """
+class PicklePropertyTest(TelegramObject):
+    __slots__ = ("_forward_from", "_date", "_new_attr")
+    def __init__(self, forward_from=None, f_date=None, new_attr=None, api_kwargs=None):
+        super().__init__(api_kwargs=api_kwargs)
+        self._forward_from = forward_from
+        self.f_date = f_date
+        self._new_attr = new_attr
+    @property
+    def forward_from(self):
+        return self._forward_from
+    @property
+    def forward_date(self):
+        return self.f_date
+    @property
+    def new_attr(self):
+        return self._new_attr
+        """
+        exec(v2, globals(), None)
+        v2_unpickle = pickle.loads(pickled_v1)
+        assert v2_unpickle.forward_from == "old_val" == v2_unpickle._forward_from
+        with pytest.raises(AttributeError):
+            # New attribute should not be available either as is always the case for pickle
+            v2_unpickle.forward_date
+        assert v2_unpickle.new_attr == 1 == v2_unpickle._new_attr
+        assert not hasattr(v2_unpickle, "to_be_removed")
+        assert v2_unpickle.api_kwargs == {"to_be_removed": "to_be_removed"}
+        pickled_v2 = pickle.dumps(v2_unpickle)
+
+        # After PTB removes the property and the attribute:
+        v3 = """
+class PicklePropertyTest(TelegramObject):
+    __slots__ = ()
+    def __init__(self, api_kwargs=None):
+        super().__init__(api_kwargs=api_kwargs)
+"""
+        exec(v3, globals(), None)
+        v3_unpickle = pickle.loads(pickled_v2)
+        assert v3_unpickle.api_kwargs == {"to_be_removed": "to_be_removed"}
+        assert not hasattr(v3_unpickle, "_forward_from")
+        assert not hasattr(v3_unpickle, "_new_attr")
+
     def test_deepcopy_telegram_obj(self, bot):
         chat = Chat(2, Chat.PRIVATE)
         user = User(3, "first_name", False)
-        date = datetime.datetime.now()
+        date = dtm.datetime.now()
         photo = PhotoSize("file_id", "unique", 21, 21)
         photo.set_bot(bot)
-        msg = Message(1, date, chat, from_user=user, text="foobar", photo=[photo])
+        msg = Message(
+            1, date, chat, from_user=user, text="foobar", photo=[photo], api_kwargs={"foo": "bar"}
+        )
         msg.set_bot(bot)
 
         new_msg = deepcopy(msg)
@@ -270,19 +444,38 @@ class TestTelegramObject:
         assert new_msg is not msg
 
         # The same bot should be present when deepcopying.
-        assert new_msg.get_bot() == bot and new_msg.get_bot() is bot
+        assert new_msg.get_bot() == bot
+        assert new_msg.get_bot() is bot
 
-        assert new_msg.date == date and new_msg.date is not date
-        assert new_msg.chat == chat and new_msg.chat is not chat
-        assert new_msg.from_user == user and new_msg.from_user is not user
-        assert new_msg.photo[0] == photo and new_msg.photo[0] is not photo
+        assert new_msg.date == date
+        assert new_msg.date is not date
+        assert new_msg.chat == chat
+        assert new_msg.chat is not chat
+        assert new_msg.from_user == user
+        assert new_msg.from_user is not user
+        assert new_msg.photo[0] == photo
+        assert new_msg.photo[0] is not photo
+        assert new_msg.api_kwargs == {"foo": "bar"}
+        assert new_msg.api_kwargs is not msg.api_kwargs
+
+        # check that deepcopy preserves the freezing status
+        with pytest.raises(
+            AttributeError, match="Attribute `text` of class `Message` can't be set!"
+        ):
+            new_msg.text = "new text"
+
+        msg._unfreeze()
+        new_message = deepcopy(msg)
+        new_message.text = "new text"
+        assert new_message.text == "new text"
 
     def test_deepcopy_subclass_telegram_obj(self, bot):
         s = self.Sub("private", "normal", bot)
         d = deepcopy(s)
         assert d is not s
         assert d._private == s._private  # Can't test for identity since two equal strings is True
-        assert d._bot == s._bot and d._bot is s._bot
+        assert d._bot == s._bot
+        assert d._bot is s._bot
         assert d.normal == s.normal
 
     def test_string_representation(self):
@@ -328,3 +521,69 @@ class TestTelegramObject:
         )
         assert str(TGO(api_kwargs={"foo": "bar"})) == expected_with_api_kwargs
         assert repr(TGO(api_kwargs={"foo": "bar"})) == expected_with_api_kwargs
+
+    @pytest.mark.parametrize("cls", TO_SUBCLASSES, ids=[cls.__name__ for cls in TO_SUBCLASSES])
+    def test_subclasses_are_frozen(self, cls):
+        if cls is TelegramObject or cls.__name__.startswith("_"):
+            # Protected classes don't need to be frozen and neither does the base class
+            return
+
+        # instantiating each subclass would be tedious as some attributes require special init
+        # args. So we inspect the code instead.
+
+        source_file = inspect.getsourcefile(cls.__init__)
+        parents = Path(source_file).parents
+        is_test_file = Path(__file__).parent.resolve() in parents
+
+        if is_test_file:
+            # If the class is defined in a test file, we don't want to test it.
+            return
+
+        if source_file.endswith("telegramobject.py"):
+            pytest.fail(
+                f"{cls.__name__} does not have its own `__init__` "
+                "and can therefore not be frozen correctly"
+            )
+
+        source_lines, _ = inspect.getsourcelines(cls.__init__)
+
+        # We use regex matching since a simple "if self._freeze() in source_lines[-1]" would also
+        # allo commented lines.
+        last_line_freezes = re.match(r"\s*self\.\_freeze\(\)", source_lines[-1])
+        uses_with_unfrozen = re.search(
+            r"\n\s*with self\.\_unfrozen\(\)\:", inspect.getsource(cls.__init__)
+        )
+
+        assert last_line_freezes or uses_with_unfrozen, f"{cls.__name__} is not frozen correctly"
+
+    def test_freeze_unfreeze(self):
+        class TestSub(TelegramObject):
+            def __init__(self):
+                super().__init__()
+                self._protected = True
+                self.public = True
+                self._freeze()
+
+        foo = TestSub()
+        foo._protected = False
+        assert foo._protected is False
+
+        with pytest.raises(
+            AttributeError, match="Attribute `public` of class `TestSub` can't be set!"
+        ):
+            foo.public = False
+
+        with pytest.raises(
+            AttributeError, match="Attribute `public` of class `TestSub` can't be deleted!"
+        ):
+            del foo.public
+
+        foo._unfreeze()
+        foo._protected = True
+        assert foo._protected is True
+        foo.public = False
+        assert foo.public is False
+        del foo.public
+        del foo._protected
+        assert not hasattr(foo, "public")
+        assert not hasattr(foo, "_protected")

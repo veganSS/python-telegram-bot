@@ -1,0 +1,41 @@
+name: Test Admonitions Generation
+on:
+  pull_request:
+    paths:
+      - telegram/**
+      - docs/**
+      - .github/workflows/docs-admonitions.yml
+  push:
+    branches:
+      - master
+
+permissions: {}
+
+jobs:
+  test-admonitions:
+    name: Test Admonitions Generation
+    runs-on: ${{matrix.os}}
+    permissions:
+      # for uploading artifacts
+      actions: write
+    strategy:
+      matrix:
+        python-version: ['3.12']
+        os: [ubuntu-latest]
+      fail-fast: False
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+          cache-dependency-path: '**/requirements*.txt'
+      - name: Install dependencies
+        run: |
+          python -W ignore -m pip install --upgrade pip
+          python -W ignore -m pip install -r requirements-dev-all.txt
+      - name: Test autogeneration of admonitions
+        run: pytest -v --tb=short tests/docs/admonition_inserter.py
